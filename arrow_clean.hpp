@@ -312,20 +312,116 @@ arrow::Status clean_age_column(std::shared_ptr<arrow::Table>& table)
 }
 
 
-// arrow::Status mean_age_in_period(std::shared_ptr<arrow::Table>& table)
-// {
-//     ac::Declaration source{"table_source", ac::TableSourceNodeOptions{table}};
+arrow::Status mean_age_in_period(std::shared_ptr<arrow::Table>& table)
+{
+    ac::Declaration source{"table_source", ac::TableSourceNodeOptions{table}};
+    ARROW_ASSIGN_OR_RAISE(auto start, arrow::TimestampScalar::FromISO8601(
+        "2016-02-15", arrow::TimeUnit::SECOND));
+    ARROW_ASSIGN_OR_RAISE(auto end, arrow::TimestampScalar::FromISO8601(
+        "2016-07-15", arrow::TimeUnit::SECOND));
+    
+    auto lower_bound = cp::call("greater_equal", 
+        {cp::field_ref("dateofdeath"), cp::literal(start)});
+    auto upper_bound = cp::call("less_equal", 
+        {cp::field_ref("dateofdeath"), cp::literal(end)});
+
+    ac::Declaration filter
+    {
+        "filter",
+        {std::move(source)},
+        ac::FilterNodeOptions(
+            cp::call("and", {lower_bound, upper_bound})
+        )
+    };
+
+    
+    ARROW_ASSIGN_OR_RAISE(auto new_table, 
+        ac::DeclarationToTable(std::move(filter)));
 
 
-//     ac::Declaration filter
-//     {
-//         "filter",
-//         {std::move(source)},
-//         cp::call("and", {
+    std::cout << "Age mean from feb to jul: " << cp::Mean(
+        new_table->GetColumnByName("age")).ValueOrDie().
+            scalar_as<arrow::DoubleScalar>().value 
+        << '\n';
 
-//         });
-//     };
-// }
+    return arrow::Status::OK();
+}
+
+
+arrow::Status top_five_causeofdeath(
+    std::shared_ptr<arrow::Table> table, bool null_to_unknown=false)
+{   
+    
+    if (!null_to_unknown)
+    {
+        ARROW_ASSIGN_OR_RAISE(auto temp, cp::DropNull(table));
+        table = temp.table();
+    }
+    
+    ac::Declaration start{"table_source", ac::TableSourceNodeOptions{table}};
+    if (null_to_unknown)
+    {
+        start = ac::Declaration
+        {
+            "project",
+            {std::move(start)},
+            ac::ProjectNodeOptions(
+                {
+                    cp::call("coalesce", 
+                    {cp::field_ref("causeofdeath"), cp::literal("unknown")}),
+                    cp::field_ref("age")
+                },
+                {
+                    "causeofdeath", "age"
+                }
+            )
+        };
+    }
+    
+    auto options = 
+        std::make_shared<cp::CountOptions>(
+            cp::CountOptions::CountMode::ALL);
+
+    auto aggregate_options =
+        ac::AggregateNodeOptions{
+            {{"hash_count", options, "age", "count"}},
+            {"causeofdeath"}}; //group by
+    ac::Declaration aggregate{
+        "aggregate", {std::move(start)}, std::move(aggregate_options)};
+    
+    ac::OrderByNodeOptions opts{
+        cp::Ordering{
+            {cp::SortKey(arrow::FieldRef("count"), cp::SortOrder::Descending)}
+        }
+    };
+    ac::Declaration order("order_by", {std::move(aggregate)}, std::move(opts));
+    
+    ARROW_ASSIGN_OR_RAISE(auto new_table, 
+        ac::DeclarationToTable(std::move(order)));
+    
+    auto r_opts = std::make_shared<cp::ReplaceSubstringOptions>("^ ", "");
+    ac::Declaration plan = ac::Declaration::Sequence(
+    {   
+        {"table_source", ac::TableSourceNodeOptions{new_table->Slice(0, 5)}},
+        {"project", ac::ProjectNodeOptions(
+            {
+                cp::call("replace_substring_regex", 
+                    {cp::field_ref("causeofdeath")}, r_opts),
+                cp::field_ref("count")
+            },
+            {"causeofdeath", "count"})   
+        }
+    });
+    
+    ARROW_ASSIGN_OR_RAISE(new_table, 
+        ac::DeclarationToTable(std::move(plan)));
+    std::cout << "Top five cause of death:\n" << 
+        new_table->ToString() << std::endl;
+
+
+    return arrow::Status::OK();
+}
+
 
 #include <chrono>
 using namespace std::chrono_literals;
@@ -336,13 +432,21 @@ void run_main_ch_5_2()
     arrow::date32();
     
 
+    // st = read_file_to_table(
+    //     "../data/celebrity_deaths_2016.csv", 
+    //     table, 
+    //     /*include_columns*/{"dateofdeath", "age"});
+    // st = add_new_column(table); 
+    // st = clean_age_column(table);
+    // st = mean_age_in_period(table);
+    
     st = read_file_to_table(
         "../data/celebrity_deaths_2016.csv", 
         table, 
-        /*include_columns*/{"dateofdeath", "age"});
-    // st = add_new_column(table); 
-    // st = clean_age_column(table);
-    std::cout <<  "";
+        /*include_columns*/{"dateofdeath", "age", "causeofdeath"});
+    st = top_five_causeofdeath(table);
+    st = top_five_causeofdeath(table, true);
+    std::cout <<  st.message();
 }
 
 #endif
