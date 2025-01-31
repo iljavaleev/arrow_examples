@@ -66,14 +66,14 @@ arrow::Status drop_nan_in_subset(
     {
         fields.push_back(cp::field_ref(f));
     }  
-    ac::Declaration filter(
+    ac::Declaration project(
         "project",
         {std::move(source)},
         ac::ProjectNodeOptions(fields)
     );
     std::shared_ptr<arrow::Table> response_table;
     ARROW_ASSIGN_OR_RAISE(response_table, 
-        ac::DeclarationToTable(std::move(filter)));
+        ac::DeclarationToTable(std::move(project)));
     
     ARROW_ASSIGN_OR_RAISE(auto temp, cp::DropNull(response_table));
     size_t without_nulls = table->num_rows() - temp.length();
@@ -423,15 +423,11 @@ arrow::Status top_five_causeofdeath(
 }
 
 
-#include <chrono>
-using namespace std::chrono_literals;
 void run_main_ch_5_2()
 {
     arrow::Status st;
     std::shared_ptr<arrow::Table> table;
-    arrow::date32();
-    
-
+   
     // st = read_file_to_table(
     //     "../data/celebrity_deaths_2016.csv", 
     //     table, 
@@ -446,7 +442,158 @@ void run_main_ch_5_2()
         /*include_columns*/{"dateofdeath", "age", "causeofdeath"});
     st = top_five_causeofdeath(table);
     st = top_five_causeofdeath(table, true);
+
+
     std::cout <<  st.message();
 }
 
+//////////// 3 part
+
+arrow::Status columns_includes_nulles(std::shared_ptr<arrow::Table>& table)
+{
+    std::cout << "Column name: null count" << "\n";
+    for (size_t i=0; i<table->num_columns(); ++i)
+    {
+        
+        auto null_cnt = table->column(i)->null_count();
+        if (null_cnt)
+            std::cout << table->schema()->field_names().at(i) 
+                << ": " << null_cnt << "\n";
+        else
+            ARROW_RETURN_NOT_OK(table->RemoveColumn(i));
+    }
+    
+    return arrow::Status::OK();
+}
+
+/*
+    unique values from the embarked column and the values are the most common
+    destination for each value of embarked
+*/
+arrow::Status embarked_most_common_destinations(std::shared_ptr<arrow::Table>& table)
+{  
+    ac::Declaration source{"table_source", ac::TableSourceNodeOptions{table}};
+    
+    /* find mean value of age column */
+    ARROW_ASSIGN_OR_RAISE(arrow::Datum datum, 
+        cp::Mean(table->GetColumnByName("age")));
+    ARROW_ASSIGN_OR_RAISE(datum, 
+        cp::Cast(datum, cp::CastOptions::Unsafe(arrow::int64())));
+    auto age_new_value = cp::literal(std::move(datum).scalar());
+    
+    /* find mean value of fare column among values less then 400 */
+    ARROW_ASSIGN_OR_RAISE(datum, cp::CallFunction("less", 
+        {table->GetColumnByName("fare"), arrow::Datum(400)}));
+    ARROW_ASSIGN_OR_RAISE(datum, 
+        cp::Filter(table->GetColumnByName("fare"), datum));
+    ARROW_ASSIGN_OR_RAISE(datum, cp::Mean(datum));
+    ARROW_ASSIGN_OR_RAISE(datum, 
+        cp::Cast(datum, cp::CastOptions::Unsafe(arrow::int64())));
+    auto fare_new_value = cp::literal(std::move(datum).scalar());
+
+    /* map columns with values found earlier */
+    auto start = ac::Declaration
+    {
+        "project",
+        {std::move(source)},
+        ac::ProjectNodeOptions(
+            {
+                cp::call("coalesce", {cp::field_ref("age"), age_new_value}),
+                cp::call("coalesce", {cp::field_ref("fare"), fare_new_value}), 
+                cp::field_ref("embarked"),
+                cp::field_ref("home.dest")
+            },
+            {
+               "age", "fare", "embarked", "home.dest"
+            }
+        )
+    };
+    /* filter table by home.dest not null */
+    auto filter_nulls = ac::Declaration
+    {
+        "filter",
+        {std::move(start)},
+        ac::FilterNodeOptions(
+            cp::call("invert", 
+                {cp::call("is_null", {cp::field_ref("home.dest")})}
+            )
+        )
+    };
+    
+    /* count values grop by "embarked", "home.dest" columns */
+    std::vector<arrow::FieldRef> fields_to_agg = {"age"};
+    std::vector<cp::Aggregate> aggs;
+    aggs.emplace_back(
+        "hash_count", 
+        std::make_shared<cp::CountOptions>(), 
+        std::move(fields_to_agg), 
+        "count");
+    auto aggregate_options =
+        ac::AggregateNodeOptions{std::move(aggs), {"embarked", "home.dest"}};
+    ac::Declaration aggregate1{
+        "aggregate", {std::move(filter_nulls)}, std::move(aggregate_options)};
+    
+    /* find max values for distinct "embarked" values */
+    fields_to_agg = {"count"};
+    aggs.emplace_back("hash_max", 
+        std::make_shared<cp::ScalarAggregateOptions>(), 
+        std::move(fields_to_agg), 
+        "max");
+    aggregate_options = ac::AggregateNodeOptions{std::move(aggs), {"embarked"}};
+    ac::Declaration aggregate2{
+        "aggregate", {aggregate1}, std::move(aggregate_options)};
+
+    /* join tables to get home.dest column */
+    ac::HashJoinNodeOptions join_opts{arrow::acero::JoinType::INNER,
+        {"embarked", "count"}, 
+        {"embarked", "max"}, 
+        cp::literal(true), "_l", "_r"};
+
+    ac::Declaration join
+    {
+        "hashjoin",
+        {std::move(aggregate1), std::move(aggregate2)}, join_opts
+    };
+
+    /* get final results */
+    auto end = ac::Declaration
+    {
+        "project",
+        {std::move(join)},
+        ac::ProjectNodeOptions(
+            {
+                
+                cp::field_ref("embarked_l"),
+                cp::field_ref("home.dest"),
+                cp::field_ref("count"),
+            },
+            {
+               "embarked", "home.dest", "count"
+            }
+        )
+    };
+
+    ARROW_ASSIGN_OR_RAISE(auto new_table, 
+        ac::DeclarationToTable(std::move(end)));
+    std::cout << "Embarked most common destinations:\n" << 
+        new_table->ToString() << std::endl;
+
+
+    return arrow::Status::OK();
+}
+
+void run_main_ch_5_3()
+{
+    arrow::Status st;
+    std::shared_ptr<arrow::Table> table;
+    
+
+    st = read_file_to_table(
+        "../data/titanic3.csv", 
+        table, {});
+    // std::cout << table->ToString();
+    st = columns_includes_nulles(table);
+    st = embarked_most_common_destinations(table);
+    std::cout <<  st.message();
+}
 #endif

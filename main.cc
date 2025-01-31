@@ -4,7 +4,7 @@
 
 int main()
 {
-    run_main_ch_5_2();
+    run_main_ch_5_3();
     return 0;
 }
 
