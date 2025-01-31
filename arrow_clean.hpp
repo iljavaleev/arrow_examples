@@ -512,7 +512,7 @@ arrow::Status embarked_most_common_destinations(std::shared_ptr<arrow::Table>& t
     auto filter_nulls = ac::Declaration
     {
         "filter",
-        {std::move(start)},
+        {start},
         ac::FilterNodeOptions(
             cp::call("invert", 
                 {cp::call("is_null", {cp::field_ref("home.dest")})}
@@ -556,7 +556,7 @@ arrow::Status embarked_most_common_destinations(std::shared_ptr<arrow::Table>& t
     };
 
     /* get final results */
-    auto end = ac::Declaration
+    auto end_first_part = ac::Declaration
     {
         "project",
         {std::move(join)},
@@ -573,14 +573,61 @@ arrow::Status embarked_most_common_destinations(std::shared_ptr<arrow::Table>& t
         )
     };
 
-    ARROW_ASSIGN_OR_RAISE(auto new_table, 
-        ac::DeclarationToTable(std::move(end)));
-    std::cout << "Embarked most common destinations:\n" << 
-        new_table->ToString() << std::endl;
+    /* Replace null values in the home.dest column with values from embarked */
+    auto second_part = ac::Declaration
+    {
+        "project",
+        {std::move(start)},
+        ac::ProjectNodeOptions(
+            {
+                cp::call("coalesce", {
+                    cp::field_ref("home.dest"), cp::field_ref("embarked")})
+            },
+            {
+                "home.dest.embarked"
+            }
+        )
+    };
 
+     /* join tables on embarked column */
+    ac::HashJoinNodeOptions join_opts_1{arrow::acero::JoinType::LEFT_OUTER,
+        {"home.dest.embarked"}, 
+        {"embarked"}, 
+        cp::literal(true), "_l", "_r"};
+
+    ac::Declaration join_1
+    {
+        "hashjoin",
+        {std::move(second_part), std::move(end_first_part)}, join_opts_1
+    };
+
+    auto third_part_end = ac::Declaration
+    {
+        "project",
+        {std::move(join_1)},
+        ac::ProjectNodeOptions(
+            {
+                cp::call("coalesce", 
+                {
+                    cp::field_ref("home.dest"),
+                    cp::field_ref("home.dest.embarked")
+                })
+            },
+            {
+                "home.dest.without_nulls"
+            }
+        )
+    };
+
+    ARROW_ASSIGN_OR_RAISE(auto new_table, 
+        ac::DeclarationToTable(std::move(third_part_end)));
+    std::cout << "Home destinations based on embarked columncd:\n" << 
+        new_table->ToString() << std::endl;
 
     return arrow::Status::OK();
 }
+
+
 
 void run_main_ch_5_3()
 {
