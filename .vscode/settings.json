@@ -70,6 +70,7 @@
         "stack": "cpp",
         "unordered_set": "cpp",
         "numeric": "cpp",
-        "ranges": "cpp"
+        "ranges": "cpp",
+        "regex": "cpp"
     }
 }

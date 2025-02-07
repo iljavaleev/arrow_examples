@@ -12,6 +12,8 @@
 #include <iostream>
 #include <vector>
 
+#include "utils.hpp"
+
 
 namespace cp = arrow::compute;
 namespace fs = arrow::fs;
@@ -643,4 +645,129 @@ void run_main_ch_5_3()
     st = embarked_most_common_destinations(table);
     std::cout <<  st.message();
 }
+
+//////////// 3 part
+
+
+arrow::Status unique_values_len(
+    const std::shared_ptr<arrow::Table>& table,
+    std::string&& column_name)
+{
+    auto column = table->GetColumnByName(column_name);
+    ARROW_ASSIGN_OR_RAISE(auto res, cp::Unique(column));
+    std::cout << res->length() << std::endl;
+    return arrow::Status::OK();
+}
+
+arrow::Status top_30(
+    const std::shared_ptr<arrow::Table>& table,
+    std::string&& column_name)
+{
+    auto column = table->GetColumnByName(column_name);
+    ARROW_ASSIGN_OR_RAISE(auto counted, cp::ValueCounts(column));
+    
+    arrow::compute::SortOptions so;
+    so.sort_keys = {
+        arrow::compute::SortKey{
+            "counts", 
+            arrow::compute::SortOrder::Descending
+        }
+    };
+    
+    // array of sorted indices
+    ARROW_ASSIGN_OR_RAISE(
+        arrow::Datum res, 
+        cp::CallFunction("sort_indices", {counted}, &so)
+    );
+
+    // sorted table
+    ARROW_ASSIGN_OR_RAISE(
+        arrow::Datum sorted, 
+        cp::CallFunction("take", {counted, std::move(res)})
+    );
+    
+    ARROW_ASSIGN_OR_RAISE(auto output, 
+        cp::DropNull(sorted.array_as<arrow::StructArray>()->field(0)));
+    
+    auto result = output.array_as<arrow::StringArray>();
+    std::cout << result->Slice(0, 30)->ToString() << std::endl;
+    return arrow::Status::OK();
+}
+
+
+arrow::Status clean_column_with_regex(std::shared_ptr<arrow::Table>& table)
+{
+    ac::Declaration source{"table_source", ac::TableSourceNodeOptions{table}};
+    std::vector<std::shared_ptr<cp::ReplaceSubstringOptions>> vopts = 
+    {
+        std::make_shared<cp::ReplaceSubstringOptions>(
+            "^[Ww]{1}[Hh]{0,1}?[Ii]{0,1}?([Tt]{1})?[Ee.]{0,2}?$", "WHITE", 1),
+        std::make_shared<cp::ReplaceSubstringOptions>(
+            "^[Gg]{1}[Rr]{0,1}?[Ee]{0,1}?[Yy.]{0,2}$", "GREY", 1),
+        std::make_shared<cp::ReplaceSubstringOptions>(
+            "^[Yy]{1}[Ee]{0,1}?[Ll]{0,2}?[Oo]{0,1}[Ww.]{0,2}$", "YELLOW", 1),
+        std::make_shared<cp::ReplaceSubstringOptions>(
+            "^[Bb]{1}[Ll]{0,1}?[Aa]{0,1}?[Cc]{0,1}[Kk.]{0,2}$", "BLACK", 1),
+    };
+    cp::Expression swap = cp::field_ref("Vehicle Color");
+    for (int i=0; i<vopts.size(); ++i)
+    {
+        swap = cp::call(
+            "replace_substring_regex", { swap }, vopts.at(i));
+    }
+
+    std::vector<cp::Expression> project_exs;
+    std::vector<std::string> project_names;
+   
+    for (const auto& f: table->ColumnNames())
+    {
+        if (f == "Vehicle Color")
+            continue;
+        project_names.push_back(f);
+        project_exs.push_back(cp::field_ref(f));
+    }
+    project_exs.push_back(std::move(swap));
+    project_names.push_back("Vehicle Color");
+    ac::Declaration project
+    {
+        "project",
+        {std::move(source)},
+        ac::ProjectNodeOptions(
+            {project_exs}, 
+            {project_names}
+        )
+    }; 
+
+    ARROW_ASSIGN_OR_RAISE(table, 
+        ac::DeclarationToTable(std::move(project)));
+   
+    return arrow::Status::OK();
+}
+
+
+void run_main_ch_5_4()
+{
+    arrow::Status st;
+    std::shared_ptr<arrow::Table> table;
+    
+
+    st = read_file_to_table(
+        "../data/nyc-parking-violations-2020.csv", 
+        table, 
+        { 
+            "Plate ID", "Registration State", "Vehicle Make", "Vehicle Color", 
+            "Street Name"
+        });
+    // std::cout << "Unique values in Vehicle Color column: ";
+    // st = unique_values_len(table, "Vehicle Color");
+    // std::cout << "Top 30 colors: ";
+    // st = top_30(table, "Vehicle Color");
+    // st = clean_column_with_regex(table);
+    // st = top_30(table, "Vehicle Color");
+    st = VehicleColorEx(table);
+    std::cout <<  st.message();
+}
+
+
+
 #endif
