@@ -27,30 +27,19 @@ const cp::FunctionDoc vehicle_color_doc
 };
 
 
-template <typename TYPE,
-          typename = typename std::enable_if<arrow::is_number_type<TYPE>::value |
-                                             arrow::is_boolean_type<TYPE>::value |
-                                             arrow::is_temporal_type<TYPE>::value>::type>
-arrow::Result<std::shared_ptr<arrow::Array>> GetArrayDataSample(
-    const std::vector<typename TYPE::c_type>& values) {
-  using ArrowBuilderType = typename arrow::TypeTraits<TYPE>::BuilderType;
-  ArrowBuilderType builder;
-  ARROW_RETURN_NOT_OK(builder.Reserve(values.size()));
-  ARROW_RETURN_NOT_OK(builder.AppendValues(values));
-  return builder.Finish();
-}
-
 arrow::Status VehicleColorFunction(
     cp::KernelContext* ctx, const cp::ExecSpan& batch, cp::ExecResult* out) 
 {
     
     const char* chars = batch[0].array.GetValues<char>(2);
     const int* idx = batch[0].array.GetValues<int>(1);
- 
-    arrow::TypedBufferBuilder<int64_t> len_builder;
+    auto null_count = batch[0].array.GetBuffer(0);
+
+    arrow::TypedBufferBuilder<int32_t> len_builder;
     arrow::BufferBuilder string_builder;
-    ARROW_RETURN_NOT_OK(len_builder.Reserve(batch.length+1));  
-   
+    
+    ARROW_RETURN_NOT_OK(len_builder.Reserve(batch.length+1));
+    
     int64_t strt = *idx++;
     int64_t end{};
 
@@ -59,6 +48,12 @@ arrow::Status VehicleColorFunction(
 
     for (int64_t i = 0; i < batch.length; ++i) 
     {
+        if (batch[0].array.IsNull(i))
+        {
+            ARROW_RETURN_NOT_OK(len_builder.Append(len_count));
+            idx++;
+            continue;
+        }        
         end = *idx++;
         size_t n = end - strt;
         char color[n];
@@ -102,23 +97,33 @@ arrow::Status VehicleColorFunction(
     ARROW_ASSIGN_OR_RAISE(auto len_buffer, len_builder.Finish(false));
     ARROW_ASSIGN_OR_RAISE(auto string_buffer, string_builder.Finish());
     
-    std::cout << len_buffer->size() << std::endl; 
-
     arrow::ArrayData ad(
-        arrow::utf8(), batch.length, {nullptr, len_buffer, string_buffer});
-    out->value = std::make_shared<arrow::ArrayData>(ad);
+        arrow::utf8(), batch.length, {null_count, len_buffer, string_buffer});
+    out->value = std::make_shared<arrow::ArrayData>(std::move(ad));
     
-    
-
     return arrow::Status::OK();
 }
 
+#include <future>
+
+arrow::Datum get_chunk(
+    const std::shared_ptr<arrow::Array>& chunk, 
+    const std::string& name)
+{
+    arrow::Datum res;
+    auto maybe_datum = cp::CallFunction(name, {chunk});
+    if (!maybe_datum.ok())
+        return res;
+    res = *maybe_datum;
+    return res;
+}
 
 arrow::Status VehicleColorEx(std::shared_ptr<arrow::Table>& table) 
 {
     const std::string name = "clean_color";
     auto func = 
-    std::make_shared<cp::ScalarFunction>(name, cp::Arity::Unary(), vehicle_color_doc);
+    std::make_shared<cp::ScalarFunction>(
+        name, cp::Arity::Unary(), vehicle_color_doc);
    
     cp::ScalarKernel kernel({arrow::utf8()}, 
         arrow::utf8(), VehicleColorFunction);
@@ -132,12 +137,40 @@ arrow::Status VehicleColorEx(std::shared_ptr<arrow::Table>& table)
     ARROW_RETURN_NOT_OK(registry->AddFunction(std::move(func)));
 
     
-    auto color_column = table->GetColumnByName("Vehicle Color")->Slice(0, 10);
+    auto color_column = table->GetColumnByName("Vehicle Color");
+    arrow::ArrayVector chunks = color_column->chunks();
     
-    ARROW_ASSIGN_OR_RAISE(auto res, cp::CallFunction(name, {color_column}));
+    // ARROW_ASSIGN_OR_RAISE(auto res, cp::CallFunction(name, {chunks.at(0)}));
+    // chunks.at(0) = res.make_array();
+    // std::cout << chunks.at(0)->ToString() << std::endl;
+    std::vector<std::future<arrow::Datum>> futures(chunks.size());
     
-    std::cout << res.chunked_array()->ToString() << std::endl;
-   
+    for (size_t i=0; i<chunks.size(); i++)
+    {
+        futures[i] = std::async(std::launch::async, get_chunk, chunks[i], name);
+    }
+
+    for (size_t i=0; i<chunks.size(); i++)
+    {
+        chunks[i] = futures[i].get().make_array();
+    }
+    std::cout << chunks.at(0)->ToString() << std::endl;
+    // auto data = res.chunked_array()->chunk(0)->data();
+    // auto db = data->buffers;
+    // int32_t* idx = db.at(1)->mutable_data_as<int32_t>();
+    // char* vals = db.at(2)->mutable_data_as<char>();
+    // int32_t strt = *idx++;
+    // int32_t end{};
+
+    // for (int64_t i = 0; i < 10; ++i) 
+    // {
+    //     end = *idx++;
+    //     std::cout << end << std::endl;
+    //     for (int64_t j = strt; j < end; ++j)
+    //         std::cout << vals[j];
+    //     std::cout << std::endl;
+    //     strt = end;
+    // }
     return arrow::Status::OK();
 }
 
