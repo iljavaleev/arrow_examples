@@ -71,6 +71,7 @@
         "unordered_set": "cpp",
         "numeric": "cpp",
         "ranges": "cpp",
-        "regex": "cpp"
+        "regex": "cpp",
+        "future": "cpp"
     }
 }

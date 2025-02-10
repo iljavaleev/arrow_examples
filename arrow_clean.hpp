@@ -758,13 +758,21 @@ void run_main_ch_5_4()
             "Plate ID", "Registration State", "Vehicle Make", "Vehicle Color", 
             "Street Name"
         });
-    // std::cout << "Unique values in Vehicle Color column: ";
-    // st = unique_values_len(table, "Vehicle Color");
-    // std::cout << "Top 30 colors: ";
-    // st = top_30(table, "Vehicle Color");
+    std::cout << "Unique values in Vehicle Color column: ";
+    st = unique_values_len(table, "Vehicle Color");
+    std::cout << "Top 30 colors: ";
+    st = top_30(table, "Vehicle Color");
+    /*
+        clean_column_with_regex uses acero and process Vehicle Color column 
+        for each of the regex patern, which may seem inefficient. Idecide to 
+        write udf vehicle_color_ex with simple row processing and async impl.
+        The result was not in favor of the latter. With Acero performance is 
+        much much better. 
+    */
     // st = clean_column_with_regex(table);
     // st = top_30(table, "Vehicle Color");
-    st = VehicleColorEx(table);
+    // st = vehicle_color_ex(table);
+    std::cout << table->ToString() << "\n";
     std::cout <<  st.message();
 }
 

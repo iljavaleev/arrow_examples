@@ -9,13 +9,12 @@
 #include <utility>
 #include <vector>
 #include <regex>
+#include <future>
 
 namespace cp = arrow::compute;
 namespace fs = arrow::fs;
 namespace ac = arrow::acero;
 
-// Demonstrate registering a user-defined Arrow compute function outside of the Arrow
-// source tree
 
 namespace cp = ::arrow::compute;
 
@@ -27,7 +26,7 @@ const cp::FunctionDoc vehicle_color_doc
 };
 
 
-arrow::Status VehicleColorFunction(
+arrow::Status vehicle_color_function(
     cp::KernelContext* ctx, const cp::ExecSpan& batch, cp::ExecResult* out) 
 {
     
@@ -104,21 +103,18 @@ arrow::Status VehicleColorFunction(
     return arrow::Status::OK();
 }
 
-#include <future>
 
 arrow::Datum get_chunk(
     const std::shared_ptr<arrow::Array>& chunk, 
     const std::string& name)
 {
-    arrow::Datum res;
     auto maybe_datum = cp::CallFunction(name, {chunk});
     if (!maybe_datum.ok())
-        return res;
-    res = *maybe_datum;
-    return res;
+        throw std::runtime_error("Vehicle Color error");
+    return maybe_datum.ValueOrDie();
 }
 
-arrow::Status VehicleColorEx(std::shared_ptr<arrow::Table>& table) 
+arrow::Status vehicle_color_ex(std::shared_ptr<arrow::Table>& table) 
 {
     const std::string name = "clean_color";
     auto func = 
@@ -126,7 +122,7 @@ arrow::Status VehicleColorEx(std::shared_ptr<arrow::Table>& table)
         name, cp::Arity::Unary(), vehicle_color_doc);
    
     cp::ScalarKernel kernel({arrow::utf8()}, 
-        arrow::utf8(), VehicleColorFunction);
+        arrow::utf8(), vehicle_color_function);
     
     kernel.mem_allocation = cp::MemAllocation::PREALLOCATE;
     kernel.null_handling = cp::NullHandling::INTERSECTION;
@@ -139,10 +135,7 @@ arrow::Status VehicleColorEx(std::shared_ptr<arrow::Table>& table)
     
     auto color_column = table->GetColumnByName("Vehicle Color");
     arrow::ArrayVector chunks = color_column->chunks();
-    
-    // ARROW_ASSIGN_OR_RAISE(auto res, cp::CallFunction(name, {chunks.at(0)}));
-    // chunks.at(0) = res.make_array();
-    // std::cout << chunks.at(0)->ToString() << std::endl;
+  
     std::vector<std::future<arrow::Datum>> futures(chunks.size());
     
     for (size_t i=0; i<chunks.size(); i++)
@@ -151,11 +144,29 @@ arrow::Status VehicleColorEx(std::shared_ptr<arrow::Table>& table)
     }
 
     for (size_t i=0; i<chunks.size(); i++)
-    {
-        chunks[i] = futures[i].get().make_array();
+    {   
+        try
+        {
+            chunks[i] = futures[i].get().make_array();
+        }
+        catch(const std::exception& e)
+        {
+            return arrow::Status::UnknownError(e.what());
+        }
+        
     }
-    std::cout << chunks.at(0)->ToString() << std::endl;
-    // auto data = res.chunked_array()->chunk(0)->data();
+    
+    auto ch_arr = std::make_shared<arrow::ChunkedArray>(std::move(chunks));
+    ARROW_ASSIGN_OR_RAISE(table, table->AddColumn(
+        table->num_columns(), 
+        arrow::field("new_column", arrow::utf8()), ch_arr));
+
+    return arrow::Status::OK();
+}
+
+
+
+ // auto data = res.chunked_array()->chunk(0)->data();
     // auto db = data->buffers;
     // int32_t* idx = db.at(1)->mutable_data_as<int32_t>();
     // char* vals = db.at(2)->mutable_data_as<char>();
@@ -171,6 +182,3 @@ arrow::Status VehicleColorEx(std::shared_ptr<arrow::Table>& table)
     //     std::cout << std::endl;
     //     strt = end;
     // }
-    return arrow::Status::OK();
-}
-
