@@ -12,6 +12,7 @@
 #include <iostream>
 #include <vector>
 
+#include "clean_utils.hpp"
 #include "utils.hpp"
 
 
@@ -19,29 +20,6 @@ namespace cp = arrow::compute;
 namespace fs = arrow::fs;
 namespace ac = arrow::acero;
 
-
-arrow::Status read_file_to_table(
-    std::string path, 
-    std::shared_ptr<arrow::Table>& res,
-    const std::vector<std::string>& include_columns,
-    const std::vector<std::string>& string_null_values = {""})
-{
-    std::shared_ptr<arrow::io::ReadableFile> infile;
-    ARROW_ASSIGN_OR_RAISE(infile, arrow::io::ReadableFile::Open(path));
-    
-    arrow::csv::ConvertOptions conv_opts;
-    conv_opts.null_values = string_null_values;
-    conv_opts.strings_can_be_null = true;
-    conv_opts.include_columns = include_columns;
-
-    ARROW_ASSIGN_OR_RAISE(auto csv_reader, arrow::csv::TableReader::Make(
-        arrow::io::default_io_context(), infile, 
-        arrow::csv::ReadOptions::Defaults(),
-        arrow::csv::ParseOptions::Defaults(), conv_opts));
-    
-    ARROW_ASSIGN_OR_RAISE(res, csv_reader->Read());
-    return arrow::Status::OK();
-}
 
 arrow::Status drop_all_nan_ex(const std::shared_ptr<arrow::Table>& table)
 {   
@@ -59,7 +37,7 @@ arrow::Status drop_all_nan_ex(const std::shared_ptr<arrow::Table>& table)
 
 arrow::Status drop_nan_in_subset(
     const std::shared_ptr<arrow::Table>& table, 
-    const std::shared_ptr<std::vector<std::string>>& subset = NULL)
+    const std::shared_ptr<std::vector<std::string>>& subset)
 {   
     ac::Declaration source{"table_source", ac::TableSourceNodeOptions{table}};
 
@@ -107,7 +85,8 @@ arrow::Status get_filter(const std::shared_ptr<arrow::Table>& table, const std::
         ac::ProjectNodeOptions(project_ex, project_name)
     );
     std::shared_ptr<arrow::Table> response_table;
-    ARROW_ASSIGN_OR_RAISE(response_table, ac::DeclarationToTable(std::move(project)));
+    ARROW_ASSIGN_OR_RAISE(response_table, 
+        ac::DeclarationToTable(std::move(project)));
 
     int n = response_table->columns().size();
     arrow::Datum d(response_table->column(0));
@@ -218,16 +197,20 @@ void run_main_ch_5_1()
         /*include_columns*/{"Plate ID", "Registration State", "Vehicle Make", 
         "Vehicle Color", "Violation Time", "Street Name"},
         /*null_values*/{"", "NA"});
-    // auto subset = std::make_shared<std::vector<std::string>>(std::vector<std::string>{"Plate ID", "Registration State", "Vehicle Make", "Street Name"});
-    // st = drop_all_nan_ex(table);
-    // st = drop_nan_in_subset(table, subset);
-    // std::cout << "Table with at least 3 not nulls in subset: ";
-    // st = at_least_3_not_nulls(table, subset);
-    // std::cout << "Column name: null count " << '\n';
-    // st = column_null_count(table);
-    // st = read_file_to_table("../data/nyc-parking-violations-2020.csv", table, {"", "NA", "BLANKPLATE"});
-    // std::cout << "NEW Column name: null count " << '\n';
-    // st = column_null_count(table);
+    auto subset = 
+        std::make_shared<std::vector<std::string>>(
+            std::vector<std::string>{"Plate ID", 
+                "Registration State", "Vehicle Make", "Street Name"});
+    st = drop_all_nan_ex(table);
+    st = drop_nan_in_subset(table, subset);
+    std::cout << "Table with at least 3 not nulls in subset: ";
+    st = at_least_3_not_nulls(table, subset);
+    std::cout << "Column name: null count " << '\n';
+    st = column_null_count(table);
+    st = read_file_to_table("../data/nyc-parking-violations-2020.csv", 
+        table, {"", "NA", "BLANKPLATE"});
+    std::cout << "NEW Column name: null count " << '\n';
+    st = column_null_count(table);
     st = plate_id(table);
     
     std::cout << st.message();
@@ -472,7 +455,8 @@ arrow::Status columns_includes_nulles(std::shared_ptr<arrow::Table>& table)
     unique values from the embarked column and the values are the most common
     destination for each value of embarked
 */
-arrow::Status embarked_most_common_destinations(std::shared_ptr<arrow::Table>& table)
+arrow::Status embarked_most_common_destinations(
+    std::shared_ptr<arrow::Table>& table)
 {  
     ac::Declaration source{"table_source", ac::TableSourceNodeOptions{table}};
     
@@ -733,8 +717,8 @@ arrow::Status clean_column_with_regex(std::shared_ptr<arrow::Table>& table)
         "project",
         {std::move(source)},
         ac::ProjectNodeOptions(
-            {project_exs}, 
-            {project_names}
+            project_exs, 
+            project_names
         )
     }; 
 
@@ -769,8 +753,8 @@ void run_main_ch_5_4()
         The result was not in favor of the latter. With Acero performance is 
         much much better. 
     */
-    // st = clean_column_with_regex(table);
-    // st = top_30(table, "Vehicle Color");
+    st = clean_column_with_regex(table);
+    st = top_30(table, "Vehicle Color");
     // st = vehicle_color_ex(table);
     std::cout << table->ToString() << "\n";
     std::cout <<  st.message();
