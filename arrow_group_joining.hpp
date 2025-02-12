@@ -28,53 +28,53 @@ arrow::Status top_20_mean_desc(const std::shared_ptr<arrow::Table>& table)
         taxirides in January 2019 (descending)
     */
 
-    // using acero
-    // ac::Declaration source{"table_source", ac::TableSourceNodeOptions{table}};
-    // ac::OrderByNodeOptions order_opts{
-    //     cp::Ordering{
-    //         {cp::SortKey(arrow::FieldRef("trip_distance"), 
-    //             cp::SortOrder::Descending)}
-    //     }
-    // };
-    // ac::Declaration order("order_by", {std::move(source)}, std::move(order_opts));
-    // ac::Declaration fetch(
-    //     "fetch", {std::move(order)}, ac::FetchNodeOptions(0, 20));
+    //using acero
+    ac::Declaration source{"table_source", ac::TableSourceNodeOptions{table}};
+    ac::OrderByNodeOptions order_opts{
+        cp::Ordering{
+            {cp::SortKey(arrow::FieldRef("trip_distance"), 
+                cp::SortOrder::Descending)}
+        }
+    };
+    ac::Declaration order("order_by", {std::move(source)}, std::move(order_opts));
+    ac::Declaration fetch(
+        "fetch", {std::move(order)}, ac::FetchNodeOptions(0, 20));
     
-    // auto agg_opts = 
-    //     std::make_shared<cp::ScalarAggregateOptions>(
-    //         cp::ScalarAggregateOptions::Defaults());
-    // cp::Aggregate ag("mean", agg_opts, arrow::FieldRef("total_amount"));
+    auto agg_opts = 
+        std::make_shared<cp::ScalarAggregateOptions>(
+            cp::ScalarAggregateOptions::Defaults());
+    cp::Aggregate ag("mean", agg_opts, arrow::FieldRef("total_amount"));
     
-    // ac::Declaration aggregate(
-    //     "aggregate", {std::move(fetch)}, ac::AggregateNodeOptions({ag}));
+    ac::Declaration aggregate(
+        "aggregate", {std::move(fetch)}, ac::AggregateNodeOptions({ag}));
     
 
-    // {
-    //     timer t;
-    //     ARROW_ASSIGN_OR_RAISE(auto new_table, 
-    //         ac::DeclarationToTable(std::move(aggregate)));
-    //     std::cout << new_table->ToString() << std::endl;   
-    // }
+    {
+        timer t;
+        ARROW_ASSIGN_OR_RAISE(auto new_table, 
+            ac::DeclarationToTable(std::move(aggregate)));
+        std::cout << new_table->ToString() << std::endl;   
+    }
     // result is ~2s more then twice longer then pandas. Order by is a bottleneck
     
-    // using arrow Datum with sort_indices
-    // {
-    //     timer t;        
-    //     ARROW_ASSIGN_OR_RAISE(
-    //         arrow::Datum datum, 
-    //         cp::SortIndices(
-    //             *(table->GetColumnByName("trip_distance")), 
-    //             cp::ArraySortOptions(cp::SortOrder::Descending))
-    //     );
+    using arrow Datum with sort_indices
+    {
+        timer t;        
+        ARROW_ASSIGN_OR_RAISE(
+            arrow::Datum datum, 
+            cp::SortIndices(
+                *(table->GetColumnByName("trip_distance")), 
+                cp::ArraySortOptions(cp::SortOrder::Descending))
+        );
         
-    //     ARROW_ASSIGN_OR_RAISE(datum, cp::Take(table, datum));
+        ARROW_ASSIGN_OR_RAISE(datum, cp::Take(table, datum));
                 
-    //     ARROW_ASSIGN_OR_RAISE(datum, 
-    //         cp::Mean(
-    //             datum.table()->GetColumnByName("total_amount")->Slice(0, 20)));
+        ARROW_ASSIGN_OR_RAISE(datum, 
+            cp::Mean(
+                datum.table()->GetColumnByName("total_amount")->Slice(0, 20)));
 
-    //     std::cout << datum.ToString() << '\n';
-    // }
+        std::cout << datum.ToString() << '\n';
+    }
     // result is nearly the same
 
     // using arrow Datum with rank
