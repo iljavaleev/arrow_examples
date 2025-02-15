@@ -304,14 +304,126 @@ void run_main_ch_6_1()
 }
 
 // part 2
+arrow::Status mean_cost_taxi_ride(
+    const std::shared_ptr<arrow::Table>& table, 
+    const std::string&& sort_field,
+    bool ascending=true
+) 
+{
+    /*
+        For each number of passengers, find the mean cost of a taxi ride. 
+        Sort this result from lowest (i.e., cheapest) to highest 
+        (i.e., most expensive), by number of passengers
+    */
+    ac::Declaration source{"table_source", ac::TableSourceNodeOptions{table}};
+    auto options = 
+        std::make_shared<cp::ScalarAggregateOptions>(
+            cp::ScalarAggregateOptions::Defaults());
+    auto aggregate_options =
+        ac::AggregateNodeOptions{
+            {{"hash_mean", options, "total_amount", "mean"}},
+            {"passenger_count"}};
+    ac::Declaration aggregate{
+        "aggregate", {std::move(source)}, std::move(aggregate_options)};
+    
+    cp::SortOrder order = cp::SortOrder::Descending;
+    if (ascending)
+        order = cp::SortOrder::Ascending;
+
+    ac::OrderByNodeOptions opts{
+        cp::Ordering{
+            {cp::SortKey(arrow::FieldRef(sort_field), std::move(order))}
+        }
+    };
+    ac::Declaration sort("order_by", {std::move(aggregate)}, std::move(opts));
+    {
+        timer t;
+        ARROW_ASSIGN_OR_RAISE(auto new_table, 
+            ac::DeclarationToTable(std::move(sort)));
+        std::cout << new_table->ToString() << std::endl;   
+    }
+    return arrow::Status::OK();
+}
+
+arrow::Status mean_pass_num(
+    const std::shared_ptr<arrow::Table>& table
+) 
+{
+    /*
+        Create a new column, trip_distance_group in which the values are short 
+        (< 2 miles), medium ( 2 miles and 10 miles), and long (> 10 miles). 
+        What is the average number of passengers per trip length category? Sort 
+        this result from highest (most passengers) to lowest (fewest passengers)
+    */
+    ac::Declaration source{"table_source", ac::TableSourceNodeOptions{table}};
+    
+    auto filter1 = 
+        cp::call(
+            "less_equal", {cp::field_ref("trip_distance"), cp::literal(2)});
+    auto filter2 = 
+            cp::call(
+            "greater", {cp::field_ref("trip_distance"), cp::literal(10)});
+    auto cond = 
+        cp::call(
+            "make_struct", 
+            {std::move(filter1), std::move(filter2)}, 
+            cp::MakeStructOptions({"a", "b"})
+        );
+    auto case_ = cp::call("case_when", 
+        {
+            cond, 
+            cp::literal("short"), cp::literal("long"), cp::literal("medium")
+        }
+    ); 
+    
+    ac::Declaration project{
+        "project", 
+        {std::move(source)}, 
+        ac::ProjectNodeOptions(
+            {cp::field_ref("passenger_count"), case_}, 
+            {"passenger_count","trip_distance_group"})
+    };
+    
+    auto options = 
+        std::make_shared<cp::ScalarAggregateOptions>(
+            cp::ScalarAggregateOptions::Defaults());
+    auto aggregate_options =
+        ac::AggregateNodeOptions{
+            {{"hash_mean", options, "passenger_count", "mean"}},
+            {"trip_distance_group"}};
+    ac::Declaration aggregate{
+        "aggregate", {std::move(project)}, std::move(aggregate_options)};
+    
+    ac::OrderByNodeOptions opts{
+        cp::Ordering{
+            {cp::SortKey(arrow::FieldRef("mean"), cp::SortOrder::Descending)}
+        }
+    };
+    ac::Declaration sort("order_by", {std::move(aggregate)}, std::move(opts));
+    
+    {
+        timer t;
+        ARROW_ASSIGN_OR_RAISE(auto new_table, 
+            ac::DeclarationToTable(std::move(sort)));
+        std::cout << new_table->ToString() << std::endl;   
+    }
+    return arrow::Status::OK();
+}
 
 
 void run_main_ch_6_2()
 {
     arrow::Status st;
     std::shared_ptr<arrow::Table> table;
-    
-    
+    st = read_file_to_table(
+        "../data/nyc_taxi_2019-01.csv", 
+        table, 
+        { 
+            "passenger_count", "trip_distance", "total_amount"
+        });
+    // st = mean_cost_taxi_ride(table, "mean", false); // 0.011925 s
+    // st = mean_cost_taxi_ride(table, "passenger_count"); // 0.010796 s
+    st = mean_pass_num(table); // 0.035646 s
     std::cout << st.message() << "\n";
 }
 

@@ -6,7 +6,7 @@
 
 int main()
 {
-    run_main_ch_6_1();
+    run_main_ch_6_2();
    
     return 0;
 }
