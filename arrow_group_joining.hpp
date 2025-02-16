@@ -411,6 +411,144 @@ arrow::Status mean_pass_num(
 }
 
 
+arrow::Status concat_two_tables(std::shared_ptr<arrow::Table>& table)
+{
+    /*
+        Create a single data frame containing rides from both January 2019 and 
+        January 2020
+    */
+    {   
+        timer t;
+        std::vector<std::string> fields 
+            = {"tpep_pickup_datetime", "passenger_count", "trip_distance", 
+                "total_amount"};
+        std::shared_ptr<arrow::Table> table_1, table_2;
+        ARROW_RETURN_NOT_OK(read_file_to_table(
+            "../data/nyc_taxi_2019-01.csv", table_1, fields));
+        ARROW_RETURN_NOT_OK(read_file_to_table(
+            "../data/nyc_taxi_2020-01.csv", table_2, fields));
+        ARROW_ASSIGN_OR_RAISE(
+            table, arrow::ConcatenateTables({table_1, table_2}));
+    }
+    return arrow::Status::OK();
+}
+
+arrow::Status mean_cost_by_year(const std::shared_ptr<arrow::Table>& table)
+{
+    /*
+        with a column year indicating which year the ride comes 
+        from use groupby to compare the average cost of a taxi in January from 
+        each of two years
+    */
+    ac::Declaration source{"table_source", ac::TableSourceNodeOptions{table}};
+    cp::Expression year = 
+        cp::call("year", {cp::field_ref("tpep_pickup_datetime")});
+
+    ac::Declaration project{
+        "project",
+        {std::move(source)},
+        ac::ProjectNodeOptions(
+            {cp::field_ref("total_amount"), year}, {"total_amount", "year"})
+    };
+    
+    auto options = 
+        std::make_shared<cp::ScalarAggregateOptions>(
+            cp::ScalarAggregateOptions::Defaults());
+    auto aggregate_options =
+        ac::AggregateNodeOptions{
+            {{"hash_mean", options, "total_amount", "mean"}},
+            {"year"}};
+    ac::Declaration aggregate{
+        "aggregate", {std::move(project)}, std::move(aggregate_options)};
+    
+    cp::Expression filter_ = cp::call("or", 
+        {
+            cp::call("equal", {cp::field_ref("year"), cp::literal(2019)}),
+            cp::call("equal", {cp::field_ref("year"), cp::literal(2020)})
+        });
+    ac::Declaration filter{
+        "filter",
+        {std::move(aggregate)},
+        ac::FilterNodeOptions(filter_)
+    };
+    
+    
+    {
+        timer t;
+        ARROW_ASSIGN_OR_RAISE(auto new_table, 
+            ac::DeclarationToTable(std::move(filter)));
+        std::cout << new_table->ToString() << std::endl;   
+    }
+    return arrow::Status::OK();
+}
+
+
+arrow::Status mean_cost_by_year_and_pass_count(
+    const std::shared_ptr<arrow::Table>& table)
+{
+    /*
+        Create a two-level grouping, first by year and then by passenger_count
+    */
+    ac::Declaration source{"table_source", ac::TableSourceNodeOptions{table}};
+    cp::Expression year = 
+        cp::call("year", {cp::field_ref("tpep_pickup_datetime")});
+    cp::Expression coal = 
+        cp::call("coalesce",{cp::field_ref("passenger_count"), cp::literal(0)});
+    ac::Declaration project{
+        "project",
+        {std::move(source)},
+        ac::ProjectNodeOptions(
+            {
+                cp::field_ref("total_amount"), 
+                coal, year
+            }, 
+            {"total_amount",  "passenger_count", "year"}
+        )
+    };
+    
+    auto options = 
+        std::make_shared<cp::ScalarAggregateOptions>(
+            cp::ScalarAggregateOptions::Defaults());
+    auto aggregate_options =
+        ac::AggregateNodeOptions{
+            {{"hash_mean", options, "total_amount", "mean"}},
+            {"year", "passenger_count"}};
+    ac::Declaration aggregate{
+        "aggregate", {std::move(project)}, std::move(aggregate_options)};
+    
+    cp::Expression filter_ = cp::call("or", 
+        {
+            cp::call("equal", {cp::field_ref("year"), cp::literal(2019)}),
+            cp::call("equal", {cp::field_ref("year"), cp::literal(2020)})
+        });
+    ac::Declaration filter{
+        "filter",
+        {std::move(aggregate)},
+        ac::FilterNodeOptions(filter_)
+    };
+   
+    ac::OrderByNodeOptions opts{
+        cp::Ordering{
+            {
+                cp::SortKey(arrow::FieldRef("year"), cp::SortOrder::Ascending),
+                cp::SortKey(arrow::FieldRef("passenger_count"), 
+                    cp::SortOrder::Ascending)
+            }
+        }
+    };
+    ac::Declaration sort("order_by", {std::move(filter)}, std::move(opts));
+
+
+    {
+        timer t;
+        ARROW_ASSIGN_OR_RAISE(auto new_table, 
+            ac::DeclarationToTable(std::move(sort)));
+        std::cout << new_table->ToString() << std::endl;   
+    }
+    return arrow::Status::OK();
+}
+
+
 void run_main_ch_6_2()
 {
     arrow::Status st;
@@ -423,7 +561,10 @@ void run_main_ch_6_2()
         });
     // st = mean_cost_taxi_ride(table, "mean", false); // 0.011925 s
     // st = mean_cost_taxi_ride(table, "passenger_count"); // 0.010796 s
-    st = mean_pass_num(table); // 0.035646 s
+    // st = mean_pass_num(table); // 0.035646 s
+    st = concat_two_tables(table); // 0.383406 s
+    // st = mean_cost_by_year(table); // 0.031645 s
+    st = mean_cost_by_year_and_pass_count(table); // 0.035522 s
     std::cout << st.message() << "\n";
 }
 
