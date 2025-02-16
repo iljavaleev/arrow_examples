@@ -1,5 +1,5 @@
-#ifndef ARROW_GROUP_JOINING
-#define ARROW_GROUP_JOINING
+#ifndef ARROW_GROUP_JOINING_HPP
+#define ARROW_GROUP_JOINING_HPP
 
 #include <arrow/api.h>
 #include <arrow/compute/api.h>
