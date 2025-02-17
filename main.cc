@@ -4,7 +4,7 @@
 
 int main()
 {
-    run_main_ch_6_2();
+    group_joining_part_2();
     return 0;
 }
 

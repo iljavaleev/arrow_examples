@@ -186,7 +186,7 @@ arrow::Status plate_id(const std::shared_ptr<arrow::Table>& table)
     return arrow::Status::OK();
 }
 
-void run_main_ch_5_1()
+void clean_part_1()
 {
     arrow::Status st;
     std::shared_ptr<arrow::Table> table;
@@ -408,7 +408,7 @@ arrow::Status top_five_causeofdeath(
 }
 
 
-void run_main_ch_5_2()
+void clean_part_2()
 {
     arrow::Status st;
     std::shared_ptr<arrow::Table> table;
@@ -615,7 +615,7 @@ arrow::Status embarked_most_common_destinations(
 
 
 
-void run_main_ch_5_3()
+void clean_part_3()
 {
     arrow::Status st;
     std::shared_ptr<arrow::Table> table;
@@ -729,7 +729,7 @@ arrow::Status clean_column_with_regex(std::shared_ptr<arrow::Table>& table)
 }
 
 
-void run_main_ch_5_4()
+void rclean_part_4()
 {
     arrow::Status st;
     std::shared_ptr<arrow::Table> table;

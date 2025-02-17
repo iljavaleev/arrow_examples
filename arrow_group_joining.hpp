@@ -285,7 +285,7 @@ arrow::Status top_10_per_pass(const std::shared_ptr<arrow::Table>& table)
 }
 
 
-void run_main_ch_6_1()
+void group_joining_part_1()
 {
     arrow::Status st;
     std::shared_ptr<arrow::Table> table;
@@ -549,7 +549,7 @@ arrow::Status mean_cost_by_year_and_pass_count(
 }
 
 
-void run_main_ch_6_2()
+void group_joining_part_2()
 {
     arrow::Status st;
     std::shared_ptr<arrow::Table> table;
