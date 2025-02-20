@@ -31,7 +31,24 @@ arrow::Status read_file_to_table(
     return arrow::Status::OK();
 }
 
-
+arrow::Status read_file_to_table_with_opts(
+    std::string path, 
+    std::shared_ptr<arrow::Table>& res,
+    arrow::csv::ReadOptions read_opts = arrow::csv::ReadOptions::Defaults(),
+    arrow::csv::ParseOptions parse_opts = arrow::csv::ParseOptions::Defaults(),
+    arrow::csv::ConvertOptions conv_opts = arrow::csv::ConvertOptions::Defaults()
+)
+{
+    std::shared_ptr<arrow::io::ReadableFile> infile;
+    ARROW_ASSIGN_OR_RAISE(infile, arrow::io::ReadableFile::Open(path));
+    
+    ARROW_ASSIGN_OR_RAISE(auto csv_reader, arrow::csv::TableReader::Make(
+        arrow::io::default_io_context(), infile, read_opts, parse_opts, 
+        conv_opts));
+    
+    ARROW_ASSIGN_OR_RAISE(res, csv_reader->Read());
+    return arrow::Status::OK();
+}
 
 
  // auto data = res.chunked_array()->chunk(0)->data();

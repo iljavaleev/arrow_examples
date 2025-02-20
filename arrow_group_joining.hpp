@@ -568,4 +568,231 @@ void group_joining_part_2()
     std::cout << st.message() << "\n";
 }
 
+
+/////// Part 3
+arrow::Status top_five_countries_most_income(
+    const std::shared_ptr<arrow::Table>& table, 
+    std::string&& group_by_field = "LOCATION")
+{
+    /*
+        Find the five countries that received the greatest amount of tourist 
+        dollars, on average, across years in the data set
+    */
+    auto options = 
+        std::make_shared<cp::ScalarAggregateOptions>(
+            cp::ScalarAggregateOptions::Defaults());
+    auto aggregate_options =
+        ac::AggregateNodeOptions{
+            {{"hash_sum", options, "Value", "total"}},
+            {group_by_field}};
+    
+    ac::OrderByNodeOptions order_opts{
+        cp::Ordering{
+            {cp::SortKey(arrow::FieldRef("total"), 
+                cp::SortOrder::Descending)}
+        }
+    };
+   
+    ac::Declaration plan = ac::Declaration::Sequence(
+        {
+            ac::Declaration("table_source", ac::TableSourceNodeOptions{table}),
+            {"filter", ac::FilterNodeOptions(
+                cp::call("equal", 
+                    {cp::field_ref("SUBJECT"), cp::literal("INT_REC")})
+            )},
+            {"aggregate", std::move(aggregate_options)},
+            {"order_by", std::move(order_opts)},
+            {"fetch", ac::FetchNodeOptions(0, 5)}
+        }
+    );
+
+    {
+        timer t;
+        ARROW_ASSIGN_OR_RAISE(auto new_table, 
+            ac::DeclarationToTable(std::move(plan)));
+        std::cout << new_table->ToString() << std::endl;   
+    }
+    
+    return arrow::Status::OK();
+}
+
+arrow::Status top_five_countries_less_spend(
+    const std::shared_ptr<arrow::Table>& table,
+    std::string&& group_by_field = "LOCATION")
+{
+    /*
+        Find the five countries whose citizens spent the least amount of tourist 
+        dollars, on average, across years in the data set.
+    */
+    auto options = 
+        std::make_shared<cp::ScalarAggregateOptions>(
+            cp::ScalarAggregateOptions::Defaults());
+    auto aggregate_options =
+        ac::AggregateNodeOptions{
+            {{"hash_sum", options, "Value", "total"}},
+            {group_by_field}};
+    
+    ac::OrderByNodeOptions order_opts{
+        cp::Ordering{
+            {cp::SortKey(arrow::FieldRef("total"), 
+                cp::SortOrder::Ascending)}
+        }
+    };
+   
+    ac::Declaration plan = ac::Declaration::Sequence(
+        {
+            ac::Declaration("table_source", ac::TableSourceNodeOptions{table}),
+            {"filter", ac::FilterNodeOptions(
+                cp::call("equal", 
+                    {cp::field_ref("SUBJECT"), cp::literal("INT-EXP")})
+            )},
+            {"aggregate", std::move(aggregate_options)},
+            {"order_by", std::move(order_opts)},
+            {"fetch", ac::FetchNodeOptions(0, 5)}
+        }
+    );
+
+    {
+        timer t;
+        ARROW_ASSIGN_OR_RAISE(auto new_table, 
+            ac::DeclarationToTable(std::move(plan)));
+        std::cout << new_table->ToString() << std::endl;   
+    }
+    
+    return arrow::Status::OK();
+}
+
+
+arrow::Status join_tables_rename_column(
+    const std::shared_ptr<arrow::Table>& table_l,
+    const std::shared_ptr<arrow::Table>& table_r, 
+    std::shared_ptr<arrow::Table>& res)
+{
+    /*
+        Join these two data frames together into a new one. In the new data 
+        frame, there is no LOCATION column. Instead, there is a name column 
+        with the full name of the country
+    */
+    ac::Declaration plan = ac::Declaration::Sequence(
+        {
+            {
+                "hashjoin", 
+                {
+                    ac::Declaration("table_source", 
+                        ac::TableSourceNodeOptions{table_l}), 
+                    ac::Declaration("table_source", 
+                        ac::TableSourceNodeOptions{table_r})
+                }, 
+                ac::HashJoinNodeOptions{ac::JoinType::INNER, {"LOCATION"}, 
+                {"LOCATION"}, cp::literal(true), "_l", "_r"}
+            },
+            {
+                "project", ac::ProjectNodeOptions(
+                    {cp::field_ref("SUBJECT"), cp::field_ref("TIME"),
+                            cp::field_ref("Value"), cp::field_ref("COUNTRY")}, 
+                    {"SUBJECT", "TIME", "Value", "name"})
+            },
+            {"filter", ac::FilterNodeOptions(cp::call("true_unless_null", 
+                {cp::field_ref("name")}))}
+        }
+    );
+
+    {
+        timer t;
+        ARROW_ASSIGN_OR_RAISE(res, 
+            ac::DeclarationToTable(std::move(plan)));
+        // std::cout << res->ToString() << std::endl;   
+    }
+    
+    return arrow::Status::OK();
+}
+
+arrow::Status top_five_countries_by_name(
+    const std::shared_ptr<arrow::Table>& table)
+{
+    /*
+        Rerun the queries from steps 2 and 3, finding the five countries 
+        that spent and received the most, on average, from tourism. But this 
+        time, get the name of each country, rather than its abbreviation, 
+        for your reports
+    */
+    {
+        timer t;
+        ARROW_RETURN_NOT_OK(top_five_countries_most_income(table, "name"));
+        ARROW_RETURN_NOT_OK(top_five_countries_less_spend(table, "name"));
+    }
+    return arrow::Status::OK();
+}
+
+
+arrow::Status mean_tourism_income_per_year(
+    const std::shared_ptr<arrow::Table>& table)
+{
+    /*
+        Get the mean tourism income per year rather than by country. Do you see 
+        any evidence of less tourism income during the time of the Great 
+        Recession, which started in 2008
+    */
+   auto options = 
+        std::make_shared<cp::ScalarAggregateOptions>(
+            cp::ScalarAggregateOptions::Defaults());
+    auto aggregate_options =
+        ac::AggregateNodeOptions{
+            {{"hash_mean", options, "Value", "total"}},
+            {"TIME"}};
+    
+    ac::OrderByNodeOptions order_opts{
+        cp::Ordering{
+            {cp::SortKey(arrow::FieldRef("total"), 
+                cp::SortOrder::Ascending)}
+        }
+    };
+
+    ac::Declaration plan = ac::Declaration::Sequence(
+        {
+            ac::Declaration("table_source", ac::TableSourceNodeOptions{table}),
+            {"filter", ac::FilterNodeOptions(
+                cp::call("equal", 
+                    {cp::field_ref("SUBJECT"), cp::literal("INT_REC")})
+            )},
+            {"aggregate", std::move(aggregate_options)},
+            {"order_by", std::move(order_opts)}
+        }
+    );
+
+    {
+        timer t;
+        ARROW_ASSIGN_OR_RAISE(auto new_table, 
+            ac::DeclarationToTable(std::move(plan)));
+        std::cout << new_table->ToString() << std::endl;   
+    }
+    return arrow::Status::OK();
+}
+
+void group_joining_part_3()
+{
+    arrow::Status st;
+    std::shared_ptr<arrow::Table> table;
+    st = read_file_to_table(
+        "../data/oecd_tourism.csv", 
+        table, 
+        { 
+            "LOCATION", "SUBJECT", "TIME", "Value"
+        });
+    // st = top_five_countries_most_income(table); // 0.002375 s
+    // st = top_five_countries_less_spend(table); // 0.001491 s
+    // Load oecd_locations.csv into a data frame
+    // std::shared_ptr<arrow::Table> tmp;
+    // arrow::csv::ReadOptions read_opts;
+    // read_opts.column_names = {"LOCATION", "COUNTRY"};
+    // st = read_file_to_table_with_opts(
+    //     "../data/oecd_locations.csv", tmp, read_opts);
+    
+    // std::shared_ptr<arrow::Table> res;
+    // st = join_tables_rename_column(table, tmp, res); // 0.001655 s
+    // st = top_five_countries_by_name(res); // 0.000481 s
+    st = mean_tourism_income_per_year(table); // 0.001722 s
+    std::cout << st.message() << "\n";
+}
+
 #endif
