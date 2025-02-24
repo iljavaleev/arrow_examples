@@ -48,7 +48,7 @@ arrow::Status get_city_state(std::vector<std::string>& res,
     return arrow::Status::OK();
 }
 
-arrow::Status get_dataset(
+arrow::Status get_table_from_dataset(
     const std::shared_ptr<ds::Dataset>& ds, 
     std::shared_ptr<arrow::Table>& result)
 {
@@ -59,25 +59,29 @@ arrow::Status get_dataset(
         return arrow::Status::IOError("Fetching PWD failed.");
     ARROW_ASSIGN_OR_RAISE(fs, arrow::fs::FileSystemFromUriOrPath(init_path));
     arrow::fs::FileSelector selector;
-    selector.base_dir = "../data/weather";
+    selector.base_dir = "../data/weather"; // path with files for ds
     selector.recursive = true;
    
     arrow::dataset::FileSystemFactoryOptions options; 
     auto read_format = std::make_shared<arrow::dataset::CsvFileFormat>();
-    ARROW_ASSIGN_OR_RAISE(
-    auto factory, arrow::dataset::FileSystemDatasetFactory::Make(fs, selector,  
-        read_format, options));
+    ARROW_ASSIGN_OR_RAISE(auto factory, 
+        arrow::dataset::FileSystemDatasetFactory::Make(fs, selector, 
+            read_format, options)
+    );
 
     ARROW_ASSIGN_OR_RAISE(auto read_dataset, factory->Finish());
     ARROW_ASSIGN_OR_RAISE(auto fragments, read_dataset->GetFragments());
+    
     auto dataset_schema_fields = read_dataset->schema()->fields();
     arrow::FieldVector fragment_fields;
     std::vector<std::shared_ptr<arrow::Table>> tables;
     std::vector<std::string> city_state;
+    
     for (const auto& fragment: fragments)
     {
+        // get city and state from fragment path
         ARROW_RETURN_NOT_OK(get_city_state(city_state, (*fragment)->ToString()));
-
+        // prescan to get first three field names  
         auto scan_opts = std::make_shared<ds::CsvFragmentScanOptions>();
         cp::ExecContext exec_context;
         auto fr = (*fragment)->InspectFragment(scan_opts.get(), &exec_context);
@@ -85,38 +89,28 @@ arrow::Status get_dataset(
         std::vector<std::string> names = std::vector<std::string>(
             inspector->column_names.begin(), 
             inspector->column_names.begin() + 3);
-        
+        // Create fragment schema
         for (int j=0; j<inspector->column_names.size(); ++j)
         {
             fragment_fields.push_back(dataset_schema_fields.at(j)->WithName(
                 inspector->column_names.at(j)));
         }
         auto fragment_schema = arrow::schema(std::move(fragment_fields));
+        arrow::dataset::ScannerBuilder scan_builder(std::move(fragment_schema), 
+            *fragment, std::make_shared<ds::ScanOptions>());
         
+        // Prepare projection
         std::vector<cp::Expression> exprs;
         for (int i=0; i<names.size(); i++)
             exprs.push_back(cp::field_ref(names.at(i)));
             
-        std::vector<std::string> new_names{
-            "date_time", "max_temp", "min_temp", "city", "state"
-        };
-
-        arrow::csv::ConvertOptions conv_opts;
-        scan_opts->convert_options = std::move(conv_opts);
-
-        std::shared_ptr<ds::ScanOptions> scan_options = 
-            std::make_shared<ds::ScanOptions>();
-        scan_options->dataset_schema = fragment_schema;
-        scan_options->fragment_scan_options = scan_opts;
-        arrow::dataset::ScannerBuilder scan_builder(
-            std::move(fragment_schema), *fragment, scan_options);
-        
-        
         exprs.push_back(cp::literal(city_state.at(0)));
         exprs.push_back(cp::literal(city_state.at(1)));
         city_state.clear();
-
-        ARROW_RETURN_NOT_OK(scan_builder.Project(exprs, new_names)); 
+        ARROW_RETURN_NOT_OK(scan_builder.Project(exprs, {
+            "date_time", "max_temp", "min_temp", "city", "state"
+        })); 
+        
         ARROW_ASSIGN_OR_RAISE(auto scanner, scan_builder.Finish());
         tables.push_back(scanner->ToTable().ValueOrDie());
     }
@@ -126,14 +120,145 @@ arrow::Status get_dataset(
 }
 
 
+arrow::Status data_starts(const std::shared_ptr<arrow::Table>& table)
+{
+    /*
+        Does the data for each city and state start and end at (roughly) 
+        the same time? How do you know?
+    */
+
+    auto options = 
+        std::make_shared<cp::ScalarAggregateOptions>(
+            cp::ScalarAggregateOptions::Defaults());
+    auto aggregate_options =
+        ac::AggregateNodeOptions{
+            {
+                {"hash_min", options, "date_time", "min"}, 
+                {"hash_max", options, "date_time", "max"}
+            },
+            {"state", "city"}};
+    
+    ac::Declaration plan = ac::Declaration::Sequence(
+        {
+            ac::Declaration("table_source", ac::TableSourceNodeOptions{table}),
+            {"aggregate", std::move(aggregate_options)}
+        }
+    );
+
+    {
+        timer t;
+        ARROW_ASSIGN_OR_RAISE(auto new_table, 
+            ac::DeclarationToTable(std::move(plan)));
+        std::cout << new_table->ToString() << std::endl;   
+    }
+    return arrow::Status::OK();
+}
+
+
+arrow::Status lowest_highest_temp(const std::shared_ptr<arrow::Table>& table)
+{
+    /*
+        What is the lowest minimum temperature recorded for each city 
+        in the data set?
+        What is the highest maximum temperature recorded in each state 
+        in the data set?
+    */
+   auto options = 
+   std::make_shared<cp::ScalarAggregateOptions>(
+       cp::ScalarAggregateOptions::Defaults());
+    
+    auto aggregate_options1 =
+    ac::AggregateNodeOptions{{{"hash_min", options, "min_temp", "min"}}, 
+        {"city"}};
+    ac::Declaration plan1 = ac::Declaration::Sequence(
+        {
+            ac::Declaration("table_source", ac::TableSourceNodeOptions{table}),
+            {"aggregate", std::move(aggregate_options1)}
+        }
+    );
+
+    {
+        timer t;
+        ARROW_ASSIGN_OR_RAISE(auto new_table, 
+            ac::DeclarationToTable(std::move(plan1)));
+        std::cout << new_table->ToString() << std::endl;   
+    }
+
+    auto aggregate_options2 = 
+    ac::AggregateNodeOptions{{{"hash_max", options, "max_temp", "max"}},
+        {"state"}};
+    ac::Declaration plan2 = ac::Declaration::Sequence(
+        {
+            ac::Declaration("table_source", ac::TableSourceNodeOptions{table}),
+            {"aggregate", std::move(aggregate_options2)}
+        }
+    );
+    {
+        timer t;
+        ARROW_ASSIGN_OR_RAISE(auto new_table, 
+            ac::DeclarationToTable(std::move(plan2)));
+        std::cout << new_table->ToString() << std::endl;   
+    }
+    return arrow::Status::OK();
+}
+
+
+arrow::Status avg_diff(const std::shared_ptr<arrow::Table>& table)
+{
+    /*
+        What is the average difference in temperature (i.e., max – min) 
+        for each of the cities in our data set
+    */
+   auto options = 
+   std::make_shared<cp::ScalarAggregateOptions>(
+       cp::ScalarAggregateOptions::Defaults());
+    auto aggregate_options =
+        ac::AggregateNodeOptions{{{"hash_mean", options, "delta", "mean_delta"}},
+        {"state", "city"}};
+    
+    std::vector<cp::Expression> exprs;
+    auto names = table->ColumnNames();
+    std::for_each(names.begin(), names.end(), 
+        [&](const std::string& name)
+        { 
+            exprs.push_back(cp::field_ref(name));
+        }
+    );
+    exprs.push_back(cp::call("subtract", 
+        {cp::field_ref("max_temp"), cp::field_ref("min_temp")}));
+    names.push_back("delta");
+    ac::Declaration plan = ac::Declaration::Sequence(
+    {
+        ac::Declaration("table_source", ac::TableSourceNodeOptions{table}),
+        ac::Declaration("project",
+            ac::ProjectNodeOptions(std::move(exprs), std::move(names))),
+        {"aggregate", std::move(aggregate_options)}
+    });
+
+    {
+        timer t;
+        ARROW_ASSIGN_OR_RAISE(auto new_table, 
+            ac::DeclarationToTable(std::move(plan)));
+        std::cout << new_table->ToString() << std::endl;   
+    }
+
+    return arrow::Status::OK();
+}
+
+
+
 void adv_group_joining_1()
 {
     arrow::Status st;
     std::shared_ptr<ds::Dataset> ds;
     std::shared_ptr<arrow::Table> table;
-    st = get_dataset(ds, table);
-    std::cout << table->ToString() << std::endl;
-
+    {   
+        timer t;
+        st = get_table_from_dataset(ds, table); // 0.007585 s
+    }
+    // st = data_starts(table); // 0.000592 s
+    // st = lowest_highest_temp(table); //0.00051 s -- 0.000166 s
+    st = avg_diff(table); // 0.00053 s
     std::cout << st.message();
 }
 
