@@ -49,7 +49,6 @@ arrow::Status get_city_state(std::vector<std::string>& res,
 }
 
 arrow::Status get_table_from_dataset(
-    const std::shared_ptr<ds::Dataset>& ds, 
     std::shared_ptr<arrow::Table>& result)
 {
     std::shared_ptr<arrow::fs::FileSystem> fs;
@@ -250,11 +249,10 @@ arrow::Status avg_diff(const std::shared_ptr<arrow::Table>& table)
 void adv_group_joining_1()
 {
     arrow::Status st;
-    std::shared_ptr<ds::Dataset> ds;
     std::shared_ptr<arrow::Table> table;
     {   
         timer t;
-        st = get_table_from_dataset(ds, table); // 0.007585 s
+        st = get_table_from_dataset(table); // 0.007585 s
     }
     // st = data_starts(table); // 0.000592 s
     // st = lowest_highest_temp(table); //0.00051 s -- 0.000166 s
@@ -262,5 +260,124 @@ void adv_group_joining_1()
     std::cout << st.message();
 }
 
+
+// Part 2
+
+arrow::Status get_table_from_dataset_part_2(
+    const std::vector<std::string>& colums,
+    const std::vector<std::string>& new_names,
+    std::shared_ptr<arrow::Table>& result)
+{
+    std::shared_ptr<arrow::fs::FileSystem> fs;
+    char init_path[256];
+    char* pwd_path = getcwd(init_path, 256); 
+    if (!pwd_path)
+        return arrow::Status::IOError("Fetching PWD failed.");
+    ARROW_ASSIGN_OR_RAISE(fs, arrow::fs::FileSystemFromUriOrPath(init_path));
+    
+    arrow::dataset::FileSystemFactoryOptions options; 
+    auto read_format = std::make_shared<arrow::dataset::CsvFileFormat>();
+    ARROW_ASSIGN_OR_RAISE(auto factory, 
+        arrow::dataset::FileSystemDatasetFactory::Make(fs, 
+            {"../data/sat-scores.csv"}, read_format, options)
+    );
+
+    ARROW_ASSIGN_OR_RAISE(auto read_dataset, factory->Finish());
+    ARROW_ASSIGN_OR_RAISE(auto scan_builder, read_dataset->NewScan());
+
+    std::vector<cp::Expression> exprs;
+    std::for_each(colums.begin(), colums.end(), [&](const std::string& col)
+        { exprs.push_back(cp::field_ref(col)); });
+    
+    ARROW_RETURN_NOT_OK(scan_builder->Project({exprs}, {new_names}));
+    ARROW_ASSIGN_OR_RAISE(auto dataset,  scan_builder->Finish());
+
+    ARROW_ASSIGN_OR_RAISE(result, dataset->ToTable());
+    return arrow::Status::OK();
+}
+
+
+arrow::Status average_SAT(const std::shared_ptr<arrow::Table>& table)
+{
+    /*
+       Find the average SAT math score for each income level, grouped and then
+       sorted by year
+    */
+
+    auto options = 
+        std::make_shared<cp::ScalarAggregateOptions>(
+            cp::ScalarAggregateOptions::Defaults());
+    auto columns = table->ColumnNames();
+    columns.erase(
+        std::remove(columns.begin(), columns.end(), "State.Code"), 
+        columns.end()); 
+    columns.erase(
+        std::remove(columns.begin(), columns.end(), "Total.Math"), 
+        columns.end());      
+    
+    std::vector<cp::Expression> exprs;
+    std::for_each(columns.begin(), columns.end(), [&](const std::string& col)
+        { exprs.push_back(cp::field_ref(col)); });
+
+
+    std::vector<cp::Aggregate> aggregates;
+    std::for_each(columns.begin() + 1, columns.end(), 
+        [&](const std::string& col){ 
+            aggregates.push_back({"hash_mean", options, col, col}); 
+        }
+    );
+    
+    ac::OrderByNodeOptions order_opts{
+        cp::Ordering{
+            {cp::SortKey(arrow::FieldRef("Year"), 
+                cp::SortOrder::Ascending)}
+        }
+    };
+   
+    ac::Declaration plan = ac::Declaration::Sequence(
+        {
+            ac::Declaration("table_source", ac::TableSourceNodeOptions{table}),
+            {"project", ac::ProjectNodeOptions({exprs}, {columns})},
+            {"aggregate", ac::AggregateNodeOptions{
+                { std::move(aggregates)}, {"Year"}}},
+            {"order_by", std::move(order_opts)}
+        }
+    );
+
+    {
+        timer t;
+        ARROW_ASSIGN_OR_RAISE(auto new_table, 
+            ac::DeclarationToTable(std::move(plan)));
+        std::cout << new_table->ToString() << std::endl;   
+    }
+    return arrow::Status::OK();
+}
+
+void adv_group_joining_2()
+{
+    arrow::Status st;
+    std::shared_ptr<arrow::Table> table;
+    std::vector<std::string> columns = {
+        "Year", "State.Code", "Total.Math", 
+        "Family Income.Less than 20k.Math",
+        "Family Income.Between 20-40k.Math", 
+        "Family Income.Between 40-60k.Math",
+        "Family Income.Between 60-80k.Math", 
+        "Family Income.Between 80-100k.Math",
+        "Family Income.More than 100k.Math"
+    };
+    std::vector<std::string> new_names = {
+       "Year", "State.Code", "Total.Math", "income<20k", "20k<income<40k", 
+        "40k<income<60k", "60k<income<80k", "80k<income<100k", "income>100k"
+    };
+
+    {   
+        timer t;
+        st = get_table_from_dataset_part_2(columns, new_names, table); // 0.006015 s
+    }
+    st = average_SAT(table); // 0.000438 s
+
+    std::cout << st.message();
+}
 
 #endif
