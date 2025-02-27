@@ -380,4 +380,242 @@ void adv_group_joining_2()
     std::cout << st.message();
 }
 
+// Part 3
+
+
+arrow::Status get_table_from_dataset_part3(
+    const std::vector<std::string>& columns,
+    const std::vector<std::string>& new_names,
+    std::shared_ptr<arrow::Table>& result
+)
+{
+    std::shared_ptr<arrow::fs::FileSystem> fs;
+    char init_path[256];
+    char* pwd_path = getcwd(init_path, 256); 
+    if (!pwd_path)
+        return arrow::Status::IOError("Fetching PWD failed.");
+    ARROW_ASSIGN_OR_RAISE(fs, arrow::fs::FileSystemFromUriOrPath(init_path));
+    arrow::fs::FileSelector selector;
+    selector.base_dir = "../data/weather";
+    selector.recursive = true;
+   
+    arrow::dataset::FileSystemFactoryOptions options; 
+    auto read_format = std::make_shared<arrow::dataset::CsvFileFormat>();
+    ARROW_ASSIGN_OR_RAISE(auto factory, 
+        arrow::dataset::FileSystemDatasetFactory::Make(fs, selector, 
+            read_format, options)
+    );
+
+    ARROW_ASSIGN_OR_RAISE(auto read_dataset, factory->Finish());
+    ARROW_ASSIGN_OR_RAISE(auto fragments, read_dataset->GetFragments());
+    
+    auto dataset_schema_fields = read_dataset->schema()->fields();
+    arrow::FieldVector fragment_fields;
+    std::vector<std::shared_ptr<arrow::Table>> tables;
+    std::vector<std::string> city_state;
+    for (const auto& fragment: fragments)
+    {
+        ARROW_RETURN_NOT_OK(get_city_state(city_state, (*fragment)->ToString()));
+        auto scan_opts = std::make_shared<ds::CsvFragmentScanOptions>();
+        cp::ExecContext exec_context;
+        auto fr = (*fragment)->InspectFragment(scan_opts.get(), &exec_context);
+        ARROW_ASSIGN_OR_RAISE(auto inspector, fr.MoveResult());
+        
+        std::vector<std::string> names;
+        for (const auto& col_name: columns)
+        {
+            std::for_each(inspector->column_names.begin(), 
+                inspector->column_names.end(), [&](const std::string& col)
+                {
+                    if (std::regex_search(col, 
+                        std::regex(col_name, std::regex_constants::ECMAScript)))
+                    { names.push_back(col); }  
+                }
+            );
+           
+        }      
+        for (int j=0; j<inspector->column_names.size(); ++j)
+        {
+            fragment_fields.push_back(dataset_schema_fields.at(j)->WithName(
+                inspector->column_names.at(j)));
+        }
+
+        auto fragment_schema = arrow::schema(std::move(fragment_fields));
+        arrow::dataset::ScannerBuilder scan_builder(std::move(fragment_schema), 
+            *fragment, std::make_shared<ds::ScanOptions>());
+        
+
+        std::vector<cp::Expression> exprs;
+        for (int i=0; i<names.size(); i++)
+            exprs.push_back(cp::field_ref(names.at(i)));
+            
+        exprs.push_back(cp::literal(city_state.at(0)));
+        exprs.push_back(cp::literal(city_state.at(1)));
+        city_state.clear();
+        ARROW_RETURN_NOT_OK(scan_builder.Project(exprs, new_names)); 
+        
+        ARROW_ASSIGN_OR_RAISE(auto scanner, scan_builder.Finish());
+        tables.push_back(scanner->ToTable().ValueOrDie());
+    }
+
+    ARROW_ASSIGN_OR_RAISE(result, arrow::ConcatenateTables(tables));
+    return arrow::Status::OK();
+}
+
+
+arrow::Status precipitation(
+    const cp::Expression& filter_ex,
+    const std::shared_ptr<arrow::Table>& table)
+{
+    /*
+        1) Determine which cities had, on at least three occasions, precipitation 
+        of 15 mm or more (book impl)
+        2) Find cities that had at least three measurements of 10 mm of 
+        precipitation or more when the temperature was at or below 0° Celsius.
+    */
+
+    auto options = std::make_shared<cp::CountOptions>(
+       cp::CountOptions::Defaults());
+    auto aggregate_options =
+        ac::AggregateNodeOptions{{{"hash_count", options, "city", "count"}},
+        {"state", "city"}};
+    
+    ac::Declaration plan = ac::Declaration::Sequence(
+    {
+        {"table_source", ac::TableSourceNodeOptions{table}},
+        {"filter", ac::FilterNodeOptions(std::move(filter_ex))},
+        {"aggregate", std::move(aggregate_options)},
+        {"filter", ac::FilterNodeOptions(
+            {
+                cp::greater_equal(cp::field_ref("count"), cp::literal(3))
+            })
+        }
+    });
+
+    {
+        timer t;
+        ARROW_ASSIGN_OR_RAISE(auto new_table, 
+            ac::DeclarationToTable(std::move(plan)));
+        std::cout << new_table->ToString() << std::endl;   
+    }
+
+    return arrow::Status::OK();
+}
+
+
+arrow::Status precipitation_proportion(
+    std::shared_ptr<arrow::Table>& table)
+{
+
+    /*
+        For each precipitation measurement, calculate the proportion of 
+        that city’s total precipitation
+    */
+
+    auto options = 
+    std::make_shared<cp::ScalarAggregateOptions>(
+        cp::ScalarAggregateOptions::Defaults());
+    
+    auto aggregate_options =
+    ac::AggregateNodeOptions{{{"hash_sum", options, "precipMM", "sum"}}, 
+        {"city", "state"}};
+    ac::Declaration plan1 = ac::Declaration::Sequence(
+        {
+            {"table_source", ac::TableSourceNodeOptions{table}},
+            {"aggregate", std::move(aggregate_options)}
+        }
+    );
+
+    std::vector<std::string> columns = {
+        "precipMM", "max_temp", "min_temp", "city_l", "state_l"};
+    std::vector<cp::Expression> exprs;
+    std::for_each(columns.begin(), columns.end(), [&](const std::string& col)
+        { exprs.push_back(cp::field_ref(col)); });
+    exprs.push_back(cp::call("divide", 
+        {cp::field_ref("precipMM"), cp::field_ref("sum")}));
+    columns = {
+        "precipMM", "max_temp", "min_temp", "city", "state", "frac"};
+    ac::Declaration plan2 = ac::Declaration::Sequence(
+        {
+            {
+                "hashjoin", 
+                {
+                    ac::Declaration("table_source", 
+                        ac::TableSourceNodeOptions{table}), 
+                    ac::Declaration("table_source", 
+                        ac::TableSourceNodeOptions{
+                            ac::DeclarationToTable(plan1).ValueOrDie()})
+                }, 
+                ac::HashJoinNodeOptions{ac::JoinType::INNER, {"city", "state"}, 
+                {"city", "state"}, cp::literal(true), "_l", "_r"}
+            },
+            {"project", ac::ProjectNodeOptions(exprs, columns)}
+        }
+    );
+
+    {
+        timer t;
+        ARROW_ASSIGN_OR_RAISE(table, 
+            ac::DeclarationToTable(std::move(plan2)));
+        // std::cout << table->ToString() << std::endl;
+    }  
+    return arrow::Status::OK();
+}
+
+
+arrow::Status max_precipitation(std::shared_ptr<arrow::Table>& table)
+{
+    /*
+        For each city, determine the greatest proportion of that city’s total 
+        precipitation to fall in a given period.
+    */
+
+    auto options = 
+    std::make_shared<cp::ScalarAggregateOptions>(
+        cp::ScalarAggregateOptions::Defaults());
+    
+    auto aggregate_options =
+    ac::AggregateNodeOptions{{{"hash_max", options, "frac", "max"}}, 
+        {"city", "state"}};
+    ac::Declaration plan = ac::Declaration::Sequence(
+        {
+            {"table_source", ac::TableSourceNodeOptions{table}},
+            {"aggregate", std::move(aggregate_options)}
+        }
+    );
+    {
+        timer t;
+        ARROW_ASSIGN_OR_RAISE(table, 
+            ac::DeclarationToTable(std::move(plan)));
+        std::cout << table->ToString() << std::endl;
+    }  
+    
+    return arrow::Status::OK();
+}
+
+
+void adv_group_joining_3()
+{
+    arrow::Status st;
+    std::shared_ptr<arrow::Table> table;
+    std::vector<std::string> columns = {
+       "precipMM", "maxtempC", "mintempC"
+    };
+    std::vector<std::string> new_names = {
+        "precipMM", "max_temp", "min_temp", "city", "state"
+    };
+    st = get_table_from_dataset_part3(columns, new_names, table);
+    // cp::Expression filter_ex = 
+    //     cp::greater_equal(cp::field_ref("precipMM"), cp::literal(15));
+    // st = precipitation(filter_ex, table); // 0.000871 s
+    // filter_ex = cp::and_(
+    //     cp::greater_equal(cp::field_ref("precipMM"), cp::literal(10)),
+    //     cp::less_equal(cp::field_ref("min_temp"), cp::literal(0))
+    // );
+    // st = precipitation(filter_ex, table); // 0.000346 s
+    st = precipitation_proportion(table); // 0.001171 s
+    st = max_precipitation(table); // 0.000358 s
+    std::cout << st.message();
+}
+
 #endif

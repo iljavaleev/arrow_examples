@@ -4,7 +4,7 @@
 
 int main()
 {
-    adv_group_joining_2();
+    adv_group_joining_3();
     return 0;
 }
 
